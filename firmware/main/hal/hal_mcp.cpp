@@ -92,6 +92,34 @@ void Hal::xiaozhi_mcp_init()
             return true;
         });
 
+    mclog::tagInfo(_tag, "add screen.set_background_color tool");
+    mcp_server.AddTool("self.screen.set_background_color",
+                       "Set the avatar screen background color using RGB values. "
+                       "Use this when the user asks to change the robot face background color.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 0, 255)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+
+                           mclog::tagInfo(_tag, "set_background_color: r={}, g={}, b={}", r, g, b);
+
+                           LvglLockGuard lock;
+
+                           auto& stackchan = GetStackChan();
+                           if (!stackchan.hasAvatar()) {
+                               return false;
+                           }
+
+                           uint32_t color = (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) |
+                                            static_cast<uint32_t>(b);
+                           stackchan.avatar().setBackgroundColor(lv_color_hex(color));
+
+                           return true;
+                       });
+
     mclog::tagInfo(_tag, "add robot.create_reminder tool");
     mcp_server.AddTool("self.robot.create_reminder",
                        "Create a reminder. Duration is in seconds. Message is what to say when time is up. Set repeat "

@@ -113,3 +113,10 @@ void DefaultSpeechBubble::setTextFont(void* font)
         _text->setTextFont((lv_font_t*)font);
     }
 }
+
+void DefaultSpeechBubble::setTextColor(lv_color_t color)
+{
+    if (_text) {
+        _text->setTextColor(color);
+    }
+}

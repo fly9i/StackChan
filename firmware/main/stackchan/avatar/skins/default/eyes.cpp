@@ -142,3 +142,10 @@ void DefaultEyes::setSize(int size)
     // Force eyelid update
     setWeight(getWeight());
 }
+
+void DefaultEyes::setBackgroundColor(lv_color_t color)
+{
+    if (_eyelid) {
+        _eyelid->setBgColor(color);
+    }
+}

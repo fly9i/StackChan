@@ -6,6 +6,7 @@
 #pragma once
 #include "elements/key_elements.h"
 #include "decorator.h"
+#include <lvgl.h>
 #include <memory>
 
 namespace stackchan::avatar {
@@ -59,6 +60,11 @@ public:
     Emotion getEmotion() const
     {
         return _emotion;
+    }
+
+    virtual void setBackgroundColor(lv_color_t color)
+    {
+        (void)color;
     }
 
     Feature& leftEye()

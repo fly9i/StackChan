@@ -32,3 +32,20 @@ Container* DefaultAvatar::getPanel() const
     }
     return NULL;
 }
+
+void DefaultAvatar::setBackgroundColor(lv_color_t color)
+{
+    secondaryColor = color;
+    if (_pannel) {
+        _pannel->setBgColor(color);
+    }
+    if (_key_elements.leftEye) {
+        static_cast<DefaultEyes*>(_key_elements.leftEye.get())->setBackgroundColor(color);
+    }
+    if (_key_elements.rightEye) {
+        static_cast<DefaultEyes*>(_key_elements.rightEye.get())->setBackgroundColor(color);
+    }
+    if (_key_elements.speechBubble) {
+        static_cast<DefaultSpeechBubble*>(_key_elements.speechBubble.get())->setTextColor(color);
+    }
+}

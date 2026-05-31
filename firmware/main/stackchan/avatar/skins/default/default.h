@@ -23,6 +23,7 @@ public:
 
     void init(lv_obj_t* parent, const lv_font_t* font = &lv_font_montserrat_16);
     uitk::lvgl_cpp::Container* getPanel() const;
+    void setBackgroundColor(lv_color_t color) override;
 
 private:
     std::unique_ptr<uitk::lvgl_cpp::Container> _pannel;
@@ -43,6 +44,7 @@ public:
     void setEmotion(const Emotion& emotion) override;
     void setVisible(bool visible) override;
     void setSize(int size) override;
+    void setBackgroundColor(lv_color_t color);
 
 private:
     bool _is_left_eye    = false;
@@ -84,6 +86,7 @@ public:
     void clearSpeech() override;
     void setVisible(bool visible) override;
     void setTextFont(void* font) override;
+    void setTextColor(lv_color_t color);
 
 private:
     std::unique_ptr<uitk::lvgl_cpp::Container> _container;
