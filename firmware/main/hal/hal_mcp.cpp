@@ -243,6 +243,17 @@ void Hal::xiaozhi_mcp_init()
                            return fmt::format(R"({{"success":true,"style":"{}","modifier_id":{}}})", style, id);
                        });
 
+    mclog::tagInfo(_tag, "add system.show_apps tool");
+    mcp_server.AddTool("self.system.show_apps",
+                       "Return to the all apps launcher screen. This restarts the device into the app list because the "
+                       "AI agent runtime does not return to the launcher directly. Use this when the user asks to go "
+                       "back, return to all apps, show the app list, open the launcher, or exit the AI agent.",
+                       std::vector<Property>{}, [this](const PropertyList& properties) -> ReturnValue {
+                           mclog::tagInfo(_tag, "show_apps requested");
+                           GetHAL().requestWarmReboot(0);
+                           return true;
+                       });
+
     mclog::tagInfo(_tag, "add screen.set_background_color tool");
     mcp_server.AddTool("self.screen.set_background_color",
                        "Set the avatar screen background color using RGB values. "
