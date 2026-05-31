@@ -142,8 +142,10 @@ void Hal::xiaozhi_mcp_init()
 
     mclog::tagInfo(_tag, "add screen.next_background_image tool");
     mcp_server.AddTool("self.screen.next_background_image",
-                       "Switch the avatar screen background to the next built-in online background image. "
-                       "Use this when the user asks to change or rotate the robot face background picture.",
+                       "Switch the avatar screen background to the next preconfigured wallpaper image. "
+                       "This uses the device's built-in preset list and does not require a URL, upload, search, or "
+                       "arbitrary online image support. Use this when the user asks to change or rotate the robot face "
+                       "background picture, wallpaper, photo, or image.",
                        std::vector<Property>{}, [this](const PropertyList& properties) -> ReturnValue {
                            auto& stackchan = GetStackChan();
                            if (!stackchan.hasAvatar()) {
