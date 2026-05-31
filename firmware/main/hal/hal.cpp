@@ -134,12 +134,38 @@ void Hal::updateHeapStatusLog()
 #include <stackchan/stackchan.h>
 #include <apps/common/common.h>
 #include <assets/assets.h>
+#include <settings.h>
+
+namespace {
+constexpr const char* kZfAgentOtaUrl       = "http://192.168.1.215:8003/xiaozhi/ota/";
+constexpr const char* kZfAgentWebsocketUrl = "ws://192.168.1.215:8000/xiaozhi/v1/";
+}  // namespace
 
 void Hal::xiaozhi_board_init()
 {
     mclog::tagInfo(_tag, "xiaozhi board init");
 
     hal_bridge::xiaozhi_board_init();
+}
+
+void Hal::prepareXiaozhiLaunchConfig()
+{
+    if (_xiaozhi_launch_profile == XiaozhiLaunchProfile::ZfAgent) {
+        mclog::tagInfo(_tag, "prepare ZF Agent xiaozhi config: ota={}, websocket={}", kZfAgentOtaUrl,
+                       kZfAgentWebsocketUrl);
+        Settings wifi_settings("wifi", true);
+        wifi_settings.SetString("ota_url", kZfAgentOtaUrl);
+
+        Settings websocket_settings("websocket", true);
+        websocket_settings.SetString("url", kZfAgentWebsocketUrl);
+        websocket_settings.SetString("token", "");
+        websocket_settings.SetInt("version", 1);
+        return;
+    }
+
+    mclog::tagInfo(_tag, "prepare official xiaozhi config");
+    Settings wifi_settings("wifi", true);
+    wifi_settings.EraseKey("ota_url");
 }
 
 static void _stackchan_update_task(void* param)
@@ -179,6 +205,8 @@ static void _stackchan_update_task(void* param)
 void Hal::startXiaozhi()
 {
     mclog::tagInfo(_tag, "start xiaozhi");
+
+    prepareXiaozhiLaunchConfig();
 
     auto& motion = GetStackChan().motion();
     motion.setAutoAngleSyncEnabled(true);

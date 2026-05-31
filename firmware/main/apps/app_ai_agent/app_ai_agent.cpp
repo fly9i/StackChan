@@ -15,16 +15,17 @@
 using namespace mooncake;
 using namespace smooth_ui_toolkit::lvgl_cpp;
 
-AppAiAgent::AppAiAgent()
+AppAiAgent::AppAiAgent(Profile profile) : _profile(profile)
 {
     // Configure App name
-    setAppInfo().name = "AI.AGENT";
+    setAppInfo().name = profile == Profile::ZfAgent ? "ZF.Agent" : "AI.AGENT";
     // Configure App icon
     static auto icon  = assets::get_image("icon_ai_agent.bin");
     setAppInfo().icon = (void*)&icon;
     // Configure App theme color
-    static uint32_t theme_color = 0x33CC99;
-    setAppInfo().userData       = (void*)&theme_color;
+    static uint32_t ai_agent_theme_color = 0x33CC99;
+    static uint32_t zf_agent_theme_color = 0x7C3AED;
+    setAppInfo().userData = profile == Profile::ZfAgent ? (void*)&zf_agent_theme_color : (void*)&ai_agent_theme_color;
 }
 
 // Called when the App is installed
@@ -41,7 +42,8 @@ void AppAiAgent::onOpen()
 
     // Request to start Xiaozhi service
     // All apps will be uninstall in next mooncake update
-    GetHAL().requestXiaozhiStart();
+    GetHAL().requestXiaozhiStart(_profile == Profile::ZfAgent ? XiaozhiLaunchProfile::ZfAgent
+                                                               : XiaozhiLaunchProfile::Official);
 }
 
 // Called repeatedly while the App is running

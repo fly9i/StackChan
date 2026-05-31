@@ -12,11 +12,19 @@
  */
 class AppAiAgent : public mooncake::AppAbility {
 public:
-    AppAiAgent();
+    enum class Profile {
+        Official,
+        ZfAgent,
+    };
+
+    explicit AppAiAgent(Profile profile = Profile::Official);
 
     // Override lifecycle callbacks
     void onCreate() override;
     void onOpen() override;
     void onRunning() override;
     void onClose() override;
+
+private:
+    Profile _profile = Profile::Official;
 };

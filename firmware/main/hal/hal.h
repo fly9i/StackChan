@@ -120,6 +120,11 @@ struct XiaozhiConfig_t {
     uint8_t idleRandomMovementLevel  = 2;
 };
 
+enum class XiaozhiLaunchProfile {
+    Official,
+    ZfAgent,
+};
+
 /**
  * @brief
  *
@@ -202,8 +207,9 @@ public:
     uint8_t getBackLightBrightness();
 
     /* --------------------------------- Xiaozhi -------------------------------- */
-    void requestXiaozhiStart()
+    void requestXiaozhiStart(XiaozhiLaunchProfile profile = XiaozhiLaunchProfile::Official)
     {
+        _xiaozhi_launch_profile   = profile;
         _xiaozhi_start_requested = true;
     }
     bool isXiaozhiStartRequested()
@@ -302,8 +308,10 @@ public:
 
 private:
     bool _xiaozhi_start_requested = false;
+    XiaozhiLaunchProfile _xiaozhi_launch_profile = XiaozhiLaunchProfile::Official;
 
     void xiaozhi_board_init();
+    void prepareXiaozhiLaunchConfig();
     void lvgl_init();
     void xiaozhi_mcp_init();
     void ble_init(bool useAltUuid);
