@@ -11,6 +11,7 @@
 #include <mooncake_log.h>
 #include <mcp_server.h>
 #include <stackchan/stackchan.h>
+#include <stackchan/modifiers/dance.h>
 #include <apps/common/common.h>
 
 using namespace stackchan;
@@ -207,6 +208,40 @@ void Hal::xiaozhi_mcp_init()
 
             return true;
         });
+
+    mclog::tagInfo(_tag, "add robot.dance tool");
+    mcp_server.AddTool("self.robot.dance",
+                       "Make the robot dance using built-in dance motions. This is supported. Use this when the user "
+                       "asks the robot to dance, move happily, shake, perform a robot dance, or look around. Styles: "
+                       "happy, robot, panic, look_around.",
+                       PropertyList({Property("style", kPropertyTypeString, std::string("happy"))}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           std::string style = properties["style"].value<std::string>();
+                           const auto* sequence = &DanceModifier::Happy;
+
+                           if (style == "robot") {
+                               sequence = &DanceModifier::Robot;
+                           } else if (style == "panic" || style == "shake") {
+                               sequence = &DanceModifier::Panic;
+                           } else if (style == "look_around" || style == "look around") {
+                               sequence = &DanceModifier::LookAround;
+                               style    = "look_around";
+                           } else {
+                               style = "happy";
+                           }
+
+                           mclog::tagInfo(_tag, "dance: style={}", style);
+
+                           LvglLockGuard lock;
+
+                           auto& stackchan = GetStackChan();
+                           if (!stackchan.hasAvatar()) {
+                               return R"({"success":false,"error":"avatar_not_ready"})";
+                           }
+
+                           int id = stackchan.addModifier(std::make_unique<DanceModifier>(*sequence));
+                           return fmt::format(R"({{"success":true,"style":"{}","modifier_id":{}}})", style, id);
+                       });
 
     mclog::tagInfo(_tag, "add screen.set_background_color tool");
     mcp_server.AddTool("self.screen.set_background_color",
