@@ -32,7 +32,4 @@ private:
     BleHandlerData_t _ble_motion_data;
     BleHandlerData_t _ble_rgb_data;
 
-    uint32_t _last_motion_cmd_tick = 0;
-
-    void check_auto_angle_sync_mode();
 };

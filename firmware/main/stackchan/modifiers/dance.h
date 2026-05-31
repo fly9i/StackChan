@@ -95,19 +95,42 @@ public:
 
     DanceModifier(const animation::KeyframeSequence& sequence) : _timeline(sequence, false)
     {
-        _timeline.start();
+    }
+
+    ~DanceModifier()
+    {
+        restore_auto_angle_sync();
     }
 
     void _update(Modifiable& stackchan) override
     {
+        if (!_started) {
+            _motion = &stackchan.motion();
+            _motion->setAutoAngleSyncEnabled(false);
+            _timeline.start();
+            _started = true;
+        }
+
         _timeline.update();
         if (_timeline.isFinished()) {
+            restore_auto_angle_sync();
             requestDestroy();
         }
     }
 
 private:
     animation::Timeline _timeline;
+    motion::Motion* _motion = nullptr;
+    bool _started           = false;
+    bool _restored          = false;
+
+    void restore_auto_angle_sync()
+    {
+        if (_motion && !_restored) {
+            _motion->setAutoAngleSyncEnabled(true);
+            _restored = true;
+        }
+    }
 };
 
 }  // namespace stackchan

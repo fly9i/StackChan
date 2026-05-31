@@ -56,6 +56,7 @@ void AppDance::onOpen()
     auto avatar = std::make_unique<avatar::DefaultAvatar>();
     avatar->init(lv_screen_active());
     GetStackChan().attachAvatar(std::move(avatar));
+    GetStackChan().motion().setAutoAngleSyncEnabled(false);
 
     /* ------------------------------- BLE events ------------------------------- */
     GetHAL().onBleAvatarData.connect([&](const char* data) {
@@ -103,7 +104,6 @@ void AppDance::onRunning()
     }
 
     if (_ble_motion_data.update_flag) {
-        check_auto_angle_sync_mode();
         GetStackChan().updateMotionFromJson(_ble_motion_data.data_ptr);
         _ble_motion_data.update_flag = false;
         _ble_motion_data.data_ptr    = nullptr;
@@ -129,6 +129,7 @@ void AppDance::onClose()
         LvglLockGuard lock;
 
         GetStackChan().resetAvatar();
+        GetStackChan().motion().setAutoAngleSyncEnabled(true);
 
         GetHAL().onBleAvatarData.clear();
         GetHAL().onBleMotionData.clear();
@@ -138,18 +139,4 @@ void AppDance::onClose()
     }
 
     GetHAL().requestWarmReboot(5);
-}
-
-void AppDance::check_auto_angle_sync_mode()
-{
-    auto& motion = GetStackChan().motion();
-
-    // If far from last command, enable auto angle sync
-    if (GetHAL().millis() - _last_motion_cmd_tick > 2000) {
-        motion.setAutoAngleSyncEnabled(true);
-    } else {
-        motion.setAutoAngleSyncEnabled(false);
-    }
-
-    _last_motion_cmd_tick = GetHAL().millis();
 }
