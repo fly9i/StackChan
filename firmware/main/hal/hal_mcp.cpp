@@ -162,7 +162,8 @@ void Hal::xiaozhi_mcp_init()
                        "1. For natural interaction, stay within +/- 45 degrees. "
                        "2. Only use values > 70 if the user explicitly asks to look far away/behind. "
                        "3. Max ranges: Yaw(-128 to 128, -128 as your left), Pitch(0 to 90, 90 as your up). "
-                       "Speed(100-1000, 150 is natural).",
+                       "Speed(100-1000, 150 is natural). Use self.robot.go_home when the user asks to return the "
+                       "head to neutral, center, or home position.",
                        PropertyList({Property("yaw", kPropertyTypeInteger, -9999, -9999, 128),
                                      Property("pitch", kPropertyTypeInteger, -9999, -9999, 90),
                                      Property("speed", kPropertyTypeInteger, 150, 100, 1000)}),
@@ -176,12 +177,33 @@ void Hal::xiaozhi_mcp_init()
                            LvglLockGuard lock;
 
                            auto& motion = GetStackChan().motion();
+                           motion.setAutoAngleSyncEnabled(false);
                            if (pitch != -9999) {
                                motion.pitchServo().moveWithSpeed(pitch * 10, speed);
                            }
                            if (yaw != -9999) {
                                motion.yawServo().moveWithSpeed(yaw * 10, speed);
                            }
+                           motion.setAutoAngleSyncEnabled(true);
+
+                           return true;
+                       });
+
+    mclog::tagInfo(_tag, "add robot.go_home tool");
+    mcp_server.AddTool("self.robot.go_home",
+                       "Move the robot head smoothly back to the neutral home position. Use this when the user says "
+                       "head back to center, face forward, reset your head, go home, or return the head to normal.",
+                       PropertyList({Property("speed", kPropertyTypeInteger, 500, 100, 1000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int speed = properties["speed"].value<int>();
+                           mclog::tagInfo(_tag, "go_home: speed={}", speed);
+
+                           LvglLockGuard lock;
+
+                           auto& motion = GetStackChan().motion();
+                           motion.setAutoAngleSyncEnabled(false);
+                           motion.moveWithSpeed(0, 0, speed);
+                           motion.setAutoAngleSyncEnabled(true);
 
                            return true;
                        });
