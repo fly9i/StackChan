@@ -7,6 +7,7 @@
 #include <board.h>
 #include <display/lvgl_display/lvgl_image.h>
 #include <esp_heap_caps.h>
+#include <jpg/jpeg_to_image.h>
 #include <mooncake_log.h>
 #include <mcp_server.h>
 #include <stackchan/stackchan.h>
@@ -32,6 +33,101 @@ static const char* _background_image_urls[] = {
 };
 
 static size_t _next_background_image_index = 0;
+
+static ReturnValue _switch_next_background_image(StackChan& stackchan)
+{
+    if (!stackchan.hasAvatar()) {
+        return R"({"success":false,"error":"avatar_not_ready"})";
+    }
+
+    constexpr size_t max_image_size = 512 * 1024;
+    const size_t image_count        = sizeof(_background_image_urls) / sizeof(_background_image_urls[0]);
+    size_t image_index              = _next_background_image_index % image_count;
+    const char* url                 = _background_image_urls[image_index];
+
+    mclog::tagInfo(_tag, "next_background_image: index={}, url={}", image_index + 1, url);
+
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+    if (!http->Open("GET", url)) {
+        mclog::tagError(_tag, "open image url failed: {}", url);
+        return R"({"success":false,"error":"open_url_failed"})";
+    }
+
+    int status_code = http->GetStatusCode();
+    if (status_code != 200) {
+        mclog::tagError(_tag, "unexpected image status: {}", status_code);
+        http->Close();
+        return fmt::format(R"({{"success":false,"error":"bad_http_status","status":{}}})", status_code);
+    }
+
+    size_t content_length = http->GetBodyLength();
+    if (content_length == 0 || content_length > max_image_size) {
+        mclog::tagError(_tag, "invalid image size: {}", content_length);
+        http->Close();
+        return fmt::format(R"({{"success":false,"error":"invalid_image_size","size":{}}})", content_length);
+    }
+
+    char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (data == nullptr) {
+        mclog::tagError(_tag, "alloc image failed: {} bytes", content_length);
+        http->Close();
+        return fmt::format(R"({{"success":false,"error":"alloc_failed","size":{}}})", content_length);
+    }
+
+    size_t total_read = 0;
+    while (total_read < content_length) {
+        int ret = http->Read(data + total_read, content_length - total_read);
+        if (ret < 0) {
+            mclog::tagError(_tag, "read image failed");
+            heap_caps_free(data);
+            http->Close();
+            return R"({"success":false,"error":"read_failed"})";
+        }
+        if (ret == 0) {
+            break;
+        }
+        total_read += ret;
+    }
+    http->Close();
+
+    if (total_read != content_length) {
+        mclog::tagError(_tag, "image download incomplete: {}/{}", total_read, content_length);
+        heap_caps_free(data);
+        return fmt::format(R"({{"success":false,"error":"download_incomplete","read":{},"size":{}}})", total_read,
+                           content_length);
+    }
+
+    std::unique_ptr<LvglImage> image;
+    uint8_t* raw_data = nullptr;
+    size_t raw_len    = 0;
+    size_t width      = 0;
+    size_t height     = 0;
+    size_t stride     = 0;
+    esp_err_t decode_ret = jpeg_to_image(reinterpret_cast<const uint8_t*>(data), content_length, &raw_data, &raw_len,
+                                         &width, &height, &stride);
+    heap_caps_free(data);
+
+    if (decode_ret != ESP_OK || raw_data == nullptr) {
+        mclog::tagError(_tag, "decode image failed: ret={}", static_cast<int>(decode_ret));
+        return fmt::format(R"({{"success":false,"error":"decode_failed","code":{}}})", static_cast<int>(decode_ret));
+    }
+
+    try {
+        image = std::make_unique<LvglAllocatedImage>(raw_data, raw_len, width, height, stride, LV_COLOR_FORMAT_RGB565);
+    } catch (const std::exception& e) {
+        mclog::tagError(_tag, "create image failed: {}", e.what());
+        heap_caps_free(raw_data);
+        return fmt::format(R"({{"success":false,"error":"decode_failed","message":"{}"}})", e.what());
+    }
+
+    {
+        LvglLockGuard lock;
+        stackchan.avatar().setBackgroundImage(std::move(image));
+    }
+
+    _next_background_image_index = (image_index + 1) % image_count;
+    return fmt::format(R"({{"success":true,"index":{},"url":"{}"}})", image_index + 1, url);
+}
 
 void Hal::xiaozhi_mcp_init()
 {
@@ -144,87 +240,20 @@ void Hal::xiaozhi_mcp_init()
     mcp_server.AddTool("self.screen.next_background_image",
                        "Switch the avatar screen background to the next preconfigured wallpaper image. "
                        "This uses the device's built-in preset list and does not require a URL, upload, search, or "
-                       "arbitrary online image support. Use this when the user asks to change or rotate the robot face "
-                       "background picture, wallpaper, photo, or image.",
+                       "arbitrary online image support. IMPORTANT: when the user asks whether you can change the "
+                       "background picture, wallpaper, photo, or image, use this tool instead of saying unsupported.",
                        std::vector<Property>{}, [this](const PropertyList& properties) -> ReturnValue {
-                           auto& stackchan = GetStackChan();
-                           if (!stackchan.hasAvatar()) {
-                               return false;
-                           }
+                            return _switch_next_background_image(GetStackChan());
+                        });
 
-                           constexpr size_t max_image_size = 512 * 1024;
-                           const size_t image_count = sizeof(_background_image_urls) / sizeof(_background_image_urls[0]);
-                           size_t image_index       = _next_background_image_index % image_count;
-                           const char* url          = _background_image_urls[image_index];
-
-                           mclog::tagInfo(_tag, "next_background_image: index={}, url={}", image_index + 1, url);
-
-                           auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-                           if (!http->Open("GET", url)) {
-                               mclog::tagError(_tag, "open image url failed: {}", url);
-                               return false;
-                           }
-
-                           int status_code = http->GetStatusCode();
-                           if (status_code != 200) {
-                               mclog::tagError(_tag, "unexpected image status: {}", status_code);
-                               http->Close();
-                               return false;
-                           }
-
-                           size_t content_length = http->GetBodyLength();
-                           if (content_length == 0 || content_length > max_image_size) {
-                               mclog::tagError(_tag, "invalid image size: {}", content_length);
-                               http->Close();
-                               return false;
-                           }
-
-                           char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                           if (data == nullptr) {
-                               mclog::tagError(_tag, "alloc image failed: {} bytes", content_length);
-                               http->Close();
-                               return false;
-                           }
-
-                           size_t total_read = 0;
-                           while (total_read < content_length) {
-                               int ret = http->Read(data + total_read, content_length - total_read);
-                               if (ret < 0) {
-                                   mclog::tagError(_tag, "read image failed");
-                                   heap_caps_free(data);
-                                   http->Close();
-                                   return false;
-                               }
-                               if (ret == 0) {
-                                   break;
-                               }
-                               total_read += ret;
-                           }
-                           http->Close();
-
-                           if (total_read != content_length) {
-                               mclog::tagError(_tag, "image download incomplete: {}/{}", total_read, content_length);
-                               heap_caps_free(data);
-                               return false;
-                           }
-
-                           std::unique_ptr<LvglImage> image;
-                           try {
-                               image = std::make_unique<LvglAllocatedImage>(data, content_length);
-                           } catch (const std::exception& e) {
-                               mclog::tagError(_tag, "create image failed: {}", e.what());
-                               heap_caps_free(data);
-                               return false;
-                           }
-
-                           {
-                               LvglLockGuard lock;
-                               stackchan.avatar().setBackgroundImage(std::move(image));
-                           }
-
-                           _next_background_image_index = (image_index + 1) % image_count;
-                           return fmt::format(R"({{"index":{},"url":"{}"}})", image_index + 1, url);
-                       });
+    mclog::tagInfo(_tag, "add screen.change_wallpaper tool");
+    mcp_server.AddTool("self.screen.change_wallpaper",
+                       "Change the robot face wallpaper/background image to the next built-in preset. This tool is "
+                       "supported. Use it whenever the user asks to change a background image, wallpaper, picture, or "
+                       "photo. It requires no parameters.",
+                       std::vector<Property>{}, [this](const PropertyList& properties) -> ReturnValue {
+                            return _switch_next_background_image(GetStackChan());
+                        });
 
     mclog::tagInfo(_tag, "add robot.create_reminder tool");
     mcp_server.AddTool("self.robot.create_reminder",
