@@ -45,6 +45,10 @@ void DefaultAvatar::setBackgroundColor(lv_color_t color)
     if (_pannel) {
         _pannel->setBgColor(color);
     }
+    if (_background_image) {
+        lv_obj_add_flag(_background_image, LV_OBJ_FLAG_HIDDEN);
+        _background_image_cached.reset();
+    }
     if (_key_elements.leftEye) {
         static_cast<DefaultEyes*>(_key_elements.leftEye.get())->setBackgroundColor(color);
     }
