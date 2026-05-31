@@ -1,2 +1,6 @@
 .DS_Store
 .idea/
+
+# ESP-IDF build outputs
+firmware/build/
+firmware/build-*/
