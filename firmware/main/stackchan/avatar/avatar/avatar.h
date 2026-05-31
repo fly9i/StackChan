@@ -6,6 +6,7 @@
 #pragma once
 #include "elements/key_elements.h"
 #include "decorator.h"
+#include <display/lvgl_display/lvgl_image.h>
 #include <lvgl.h>
 #include <memory>
 
@@ -65,6 +66,11 @@ public:
     virtual void setBackgroundColor(lv_color_t color)
     {
         (void)color;
+    }
+
+    virtual void setBackgroundImage(std::unique_ptr<LvglImage> image)
+    {
+        (void)image;
     }
 
     Feature& leftEye()

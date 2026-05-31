@@ -24,9 +24,12 @@ public:
     void init(lv_obj_t* parent, const lv_font_t* font = &lv_font_montserrat_16);
     uitk::lvgl_cpp::Container* getPanel() const;
     void setBackgroundColor(lv_color_t color) override;
+    void setBackgroundImage(std::unique_ptr<LvglImage> image) override;
 
 private:
     std::unique_ptr<uitk::lvgl_cpp::Container> _pannel;
+    lv_obj_t* _background_image = nullptr;
+    std::unique_ptr<LvglImage> _background_image_cached;
 };
 
 /**

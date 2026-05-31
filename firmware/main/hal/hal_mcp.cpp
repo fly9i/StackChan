@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+#include <board.h>
+#include <display/lvgl_display/lvgl_image.h>
+#include <esp_heap_caps.h>
 #include <mooncake_log.h>
 #include <mcp_server.h>
 #include <stackchan/stackchan.h>
@@ -12,6 +15,23 @@
 using namespace stackchan;
 
 static const std::string_view _tag = "HAL-MCP";
+
+static const char* _background_image_urls[] = {
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_01_320x240.jpg",
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_02_320x240.jpg",
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_03_320x240.jpg",
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_04_320x240.jpg",
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_05_320x240.jpg",
+    "https://fei-storage.oss-cn-zhangjiakou.aliyuncs.com/stackchain/backgrounds/yui-aragaki/320x240/"
+    "yui_06_320x240.jpg",
+};
+
+static size_t _next_background_image_index = 0;
 
 void Hal::xiaozhi_mcp_init()
 {
@@ -118,6 +138,90 @@ void Hal::xiaozhi_mcp_init()
                            stackchan.avatar().setBackgroundColor(lv_color_hex(color));
 
                            return true;
+                       });
+
+    mclog::tagInfo(_tag, "add screen.next_background_image tool");
+    mcp_server.AddTool("self.screen.next_background_image",
+                       "Switch the avatar screen background to the next built-in online background image. "
+                       "Use this when the user asks to change or rotate the robot face background picture.",
+                       std::vector<Property>{}, [this](const PropertyList& properties) -> ReturnValue {
+                           auto& stackchan = GetStackChan();
+                           if (!stackchan.hasAvatar()) {
+                               return false;
+                           }
+
+                           constexpr size_t max_image_size = 512 * 1024;
+                           const size_t image_count = sizeof(_background_image_urls) / sizeof(_background_image_urls[0]);
+                           size_t image_index       = _next_background_image_index % image_count;
+                           const char* url          = _background_image_urls[image_index];
+
+                           mclog::tagInfo(_tag, "next_background_image: index={}, url={}", image_index + 1, url);
+
+                           auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+                           if (!http->Open("GET", url)) {
+                               mclog::tagError(_tag, "open image url failed: {}", url);
+                               return false;
+                           }
+
+                           int status_code = http->GetStatusCode();
+                           if (status_code != 200) {
+                               mclog::tagError(_tag, "unexpected image status: {}", status_code);
+                               http->Close();
+                               return false;
+                           }
+
+                           size_t content_length = http->GetBodyLength();
+                           if (content_length == 0 || content_length > max_image_size) {
+                               mclog::tagError(_tag, "invalid image size: {}", content_length);
+                               http->Close();
+                               return false;
+                           }
+
+                           char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                           if (data == nullptr) {
+                               mclog::tagError(_tag, "alloc image failed: {} bytes", content_length);
+                               http->Close();
+                               return false;
+                           }
+
+                           size_t total_read = 0;
+                           while (total_read < content_length) {
+                               int ret = http->Read(data + total_read, content_length - total_read);
+                               if (ret < 0) {
+                                   mclog::tagError(_tag, "read image failed");
+                                   heap_caps_free(data);
+                                   http->Close();
+                                   return false;
+                               }
+                               if (ret == 0) {
+                                   break;
+                               }
+                               total_read += ret;
+                           }
+                           http->Close();
+
+                           if (total_read != content_length) {
+                               mclog::tagError(_tag, "image download incomplete: {}/{}", total_read, content_length);
+                               heap_caps_free(data);
+                               return false;
+                           }
+
+                           std::unique_ptr<LvglImage> image;
+                           try {
+                               image = std::make_unique<LvglAllocatedImage>(data, content_length);
+                           } catch (const std::exception& e) {
+                               mclog::tagError(_tag, "create image failed: {}", e.what());
+                               heap_caps_free(data);
+                               return false;
+                           }
+
+                           {
+                               LvglLockGuard lock;
+                               stackchan.avatar().setBackgroundImage(std::move(image));
+                           }
+
+                           _next_background_image_index = (image_index + 1) % image_count;
+                           return fmt::format(R"({{"index":{},"url":"{}"}})", image_index + 1, url);
                        });
 
     mclog::tagInfo(_tag, "add robot.create_reminder tool");
