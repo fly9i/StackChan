@@ -52,6 +52,12 @@ public:
         Blink,
         Rainbow,
         Chase,
+        Neon,
+        Aurora,
+        Breath,
+        Comet,
+        Meteor,
+        Theater,
     };
 
     bool setColor(int red, int green, int blue, int brightness)
@@ -91,6 +97,66 @@ public:
         }
 
         update_state(Mode::Chase, red, green, blue, brightness, speed_ms, width);
+        return true;
+    }
+
+    bool neon(int brightness, int speed_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Neon, 0, 0, 0, brightness, speed_ms, 0);
+        return true;
+    }
+
+    bool aurora(int brightness, int speed_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Aurora, 0, 0, 0, brightness, speed_ms, 0);
+        return true;
+    }
+
+    bool breath(int red, int green, int blue, int brightness, int speed_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Breath, red, green, blue, brightness, speed_ms, 0);
+        return true;
+    }
+
+    bool comet(int red, int green, int blue, int brightness, int speed_ms, int tail_width)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Comet, red, green, blue, brightness, speed_ms, tail_width);
+        return true;
+    }
+
+    bool meteor(int brightness, int speed_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Meteor, 0, 0, 0, brightness, speed_ms, 0);
+        return true;
+    }
+
+    bool theater(int red, int green, int blue, int brightness, int speed_ms, int spacing)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Theater, red, green, blue, brightness, speed_ms, spacing);
         return true;
     }
 
@@ -134,6 +200,7 @@ private:
     State _state;
     uint8_t _rainbow_phase = 0;
     size_t _chase_head = 0;
+    uint32_t _meteor_seed = 0x12345678;
     bool _blink_on = false;
     uint32_t _last_frame_ms = 0;
     const char* _last_error = "not_started";
@@ -243,6 +310,11 @@ private:
     void update_state(Mode mode, int red, int green, int blue, int brightness, int interval_ms, int chase_width)
     {
         xSemaphoreTake(_mutex, portMAX_DELAY);
+        if (_state.mode != mode) {
+            _rainbow_phase = 0;
+            _chase_head = 0;
+            _blink_on = false;
+        }
         _state.mode = mode;
         _state.red = static_cast<uint8_t>(std::clamp(red, 0, 255));
         _state.green = static_cast<uint8_t>(std::clamp(green, 0, 255));
@@ -303,6 +375,29 @@ private:
                 fill_chase(state);
                 _chase_head = (_chase_head + 1) % kLedCount;
                 break;
+            case Mode::Neon:
+                fill_neon(state);
+                _rainbow_phase = static_cast<uint8_t>(_rainbow_phase + 4);
+                break;
+            case Mode::Aurora:
+                fill_aurora(state);
+                _rainbow_phase = static_cast<uint8_t>(_rainbow_phase + 2);
+                break;
+            case Mode::Breath:
+                fill_breath(state);
+                _rainbow_phase = static_cast<uint8_t>(_rainbow_phase + 4);
+                break;
+            case Mode::Comet:
+                fill_comet(state);
+                _chase_head = (_chase_head + 1) % kLedCount;
+                break;
+            case Mode::Meteor:
+                fill_meteor(state, state.dirty);
+                break;
+            case Mode::Theater:
+                fill_theater(state);
+                _chase_head = (_chase_head + 1) % std::max<size_t>(state.chase_width, 1);
+                break;
         }
 
         flush_pixels();
@@ -353,6 +448,105 @@ private:
         for (size_t dot = 0; dot < state.chase_width; ++dot) {
             set_pixel_rgb((_chase_head + dot) % kLedCount, red, green, blue);
         }
+    }
+
+    void fill_neon(const State& state)
+    {
+        static constexpr uint8_t palette[][3] = {
+            {255, 0, 180},
+            {0, 220, 255},
+            {255, 220, 0},
+            {120, 0, 255},
+        };
+        for (size_t i = 0; i < kLedCount; ++i) {
+            const size_t index = ((_rainbow_phase / 12) + i / 8) % 4;
+            const uint8_t pulse = static_cast<uint8_t>(128 + triangle_wave(static_cast<uint8_t>(_rainbow_phase + i * 7), 127));
+            const uint8_t brightness = static_cast<uint8_t>(static_cast<uint16_t>(state.brightness) * pulse / 255);
+            set_pixel_rgb(i, scale(palette[index][0], brightness), scale(palette[index][1], brightness),
+                          scale(palette[index][2], brightness));
+        }
+    }
+
+    void fill_aurora(const State& state)
+    {
+        for (size_t i = 0; i < kLedCount; ++i) {
+            const uint8_t wave = triangle_wave(static_cast<uint8_t>(_rainbow_phase + i * 3), 120);
+            const uint8_t brightness = static_cast<uint8_t>(static_cast<uint16_t>(state.brightness) * (80 + wave) / 200);
+            const uint8_t mix = static_cast<uint8_t>(_rainbow_phase / 2 + i * 2);
+            uint8_t red = scale(static_cast<uint8_t>(20 + mix / 12), brightness);
+            uint8_t green = scale(static_cast<uint8_t>(120 + wave / 2), brightness);
+            uint8_t blue = scale(static_cast<uint8_t>(180 + triangle_wave(static_cast<uint8_t>(mix + 90), 60)), brightness);
+            set_pixel_rgb(i, red, green, blue);
+        }
+    }
+
+    void fill_breath(const State& state)
+    {
+        uint8_t breath_level = triangle_wave(_rainbow_phase, state.brightness);
+        fill_solid(state.red, state.green, state.blue, breath_level);
+    }
+
+    void fill_comet(const State& state)
+    {
+        clear_pixels();
+        const size_t tail_width = std::max<size_t>(state.chase_width, 1);
+        for (size_t dot = 0; dot < tail_width; ++dot) {
+            const size_t index = (_chase_head + kLedCount - dot) % kLedCount;
+            const uint8_t brightness = static_cast<uint8_t>(static_cast<uint16_t>(state.brightness) * (tail_width - dot) / tail_width);
+            set_pixel_rgb(index, scale(state.red, brightness), scale(state.green, brightness), scale(state.blue, brightness));
+        }
+    }
+
+    void fill_meteor(const State& state, bool reset)
+    {
+        if (reset) {
+            clear_pixels();
+        }
+        for (auto& pixel : _pixels) {
+            pixel = static_cast<uint8_t>(static_cast<uint16_t>(pixel) * 190 / 255);
+        }
+        for (size_t meteor = 0; meteor < 3; ++meteor) {
+            const size_t index = next_random() % kLedCount;
+            uint8_t red = 0;
+            uint8_t green = 0;
+            uint8_t blue = 0;
+            color_wheel(static_cast<uint8_t>(_rainbow_phase + meteor * 70), state.brightness, red, green, blue);
+            set_pixel_rgb(index, red, green, blue);
+        }
+        _rainbow_phase = static_cast<uint8_t>(_rainbow_phase + 9);
+    }
+
+    void fill_theater(const State& state)
+    {
+        clear_pixels();
+        const size_t spacing = std::max<size_t>(state.chase_width, 2);
+        const uint8_t red = scale(state.red, state.brightness);
+        const uint8_t green = scale(state.green, state.brightness);
+        const uint8_t blue = scale(state.blue, state.brightness);
+        for (size_t i = 0; i < kLedCount; ++i) {
+            if ((i + _chase_head) % spacing == 0) {
+                set_pixel_rgb(i, red, green, blue);
+            }
+        }
+    }
+
+    static uint8_t scale(uint8_t value, uint8_t brightness)
+    {
+        return static_cast<uint8_t>(static_cast<uint16_t>(value) * brightness / 255);
+    }
+
+    static uint8_t triangle_wave(uint8_t phase, uint8_t max_value)
+    {
+        const uint8_t v = phase < 128 ? static_cast<uint8_t>(phase * 2) : static_cast<uint8_t>((255 - phase) * 2);
+        return static_cast<uint8_t>(static_cast<uint16_t>(v) * max_value / 255);
+    }
+
+    uint32_t next_random()
+    {
+        _meteor_seed ^= _meteor_seed << 13;
+        _meteor_seed ^= _meteor_seed >> 17;
+        _meteor_seed ^= _meteor_seed << 5;
+        return _meteor_seed;
     }
 
     static void color_wheel(uint8_t wheel_pos, uint8_t brightness, uint8_t& red, uint8_t& green, uint8_t& blue)
@@ -784,6 +978,118 @@ void Hal::xiaozhi_mcp_init()
                                           g, b, brightness, speed_ms, width);
                            return _led_strip_result(_led_strip_controller.chase(r, g, b, brightness, speed_ms, width),
                                                     "chase");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.neon tool");
+    mcp_server.AddTool("self.led_strip.neon",
+                       "Show a neon sign style animation on the external WS2812/S3 Chain LED strip connected to GPIO9. "
+                       "Use this for neon, cyberpunk, nightclub, or signboard lighting effects.",
+                       PropertyList({Property("brightness", kPropertyTypeInteger, 36, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 45, 20, 1000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip neon: brightness={}, speed={}ms", brightness, speed_ms);
+                           return _led_strip_result(_led_strip_controller.neon(brightness, speed_ms), "neon");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.aurora tool");
+    mcp_server.AddTool("self.led_strip.aurora",
+                       "Show a soft aurora / northern lights animation on the external WS2812/S3 Chain LED strip "
+                       "connected to GPIO9.",
+                       PropertyList({Property("brightness", kPropertyTypeInteger, 32, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 60, 20, 2000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip aurora: brightness={}, speed={}ms", brightness, speed_ms);
+                           return _led_strip_result(_led_strip_controller.aurora(brightness, speed_ms), "aurora");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.breath tool");
+    mcp_server.AddTool("self.led_strip.breath",
+                       "Show a breathing light effect on the external WS2812/S3 Chain LED strip connected to GPIO9.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 0, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 220, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 50, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 35, 20, 1000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip breath: r={}, g={}, b={}, brightness={}, speed={}ms", r, g,
+                                          b, brightness, speed_ms);
+                           return _led_strip_result(_led_strip_controller.breath(r, g, b, brightness, speed_ms),
+                                                    "breath");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.comet tool");
+    mcp_server.AddTool("self.led_strip.comet",
+                       "Show a moving comet with a fading tail on the external WS2812/S3 Chain LED strip connected to "
+                       "GPIO9.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 48, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 25, 20, 1000),
+                                     Property("tail_width", kPropertyTypeInteger, 18, 2, 60)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+                           int tail_width = properties["tail_width"].value<int>();
+
+                           mclog::tagInfo(_tag,
+                                          "led_strip comet: r={}, g={}, b={}, brightness={}, speed={}ms, tail={}", r,
+                                          g, b, brightness, speed_ms, tail_width);
+                           return _led_strip_result(
+                               _led_strip_controller.comet(r, g, b, brightness, speed_ms, tail_width), "comet");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.meteor tool");
+    mcp_server.AddTool("self.led_strip.meteor",
+                       "Show a meteor shower / random falling stars effect on the external WS2812/S3 Chain LED strip "
+                       "connected to GPIO9.",
+                       PropertyList({Property("brightness", kPropertyTypeInteger, 45, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 45, 20, 1000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip meteor: brightness={}, speed={}ms", brightness, speed_ms);
+                           return _led_strip_result(_led_strip_controller.meteor(brightness, speed_ms), "meteor");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.theater tool");
+    mcp_server.AddTool("self.led_strip.theater",
+                       "Show a theater chase animation on the external WS2812/S3 Chain LED strip connected to GPIO9.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 180, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 0, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 42, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 80, 20, 1000),
+                                     Property("spacing", kPropertyTypeInteger, 3, 2, 16)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+                           int spacing = properties["spacing"].value<int>();
+
+                           mclog::tagInfo(_tag,
+                                          "led_strip theater: r={}, g={}, b={}, brightness={}, speed={}ms, spacing={}",
+                                          r, g, b, brightness, speed_ms, spacing);
+                           return _led_strip_result(
+                               _led_strip_controller.theater(r, g, b, brightness, speed_ms, spacing), "theater");
                        });
 
     mclog::tagInfo(_tag, "add led_strip.clear tool");
