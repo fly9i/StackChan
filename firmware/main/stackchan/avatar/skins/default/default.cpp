@@ -60,6 +60,20 @@ void DefaultAvatar::setBackgroundColor(lv_color_t color)
     }
 }
 
+void DefaultAvatar::setExpressionColor(lv_color_t color)
+{
+    primaryColor = color;
+    if (_key_elements.leftEye) {
+        static_cast<DefaultEyes*>(_key_elements.leftEye.get())->setExpressionColor(color);
+    }
+    if (_key_elements.rightEye) {
+        static_cast<DefaultEyes*>(_key_elements.rightEye.get())->setExpressionColor(color);
+    }
+    if (_key_elements.mouth) {
+        static_cast<DefaultMouth*>(_key_elements.mouth.get())->setExpressionColor(color);
+    }
+}
+
 void DefaultAvatar::setBackgroundImage(std::unique_ptr<LvglImage> image)
 {
     if (!_background_image) {

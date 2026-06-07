@@ -149,3 +149,10 @@ void DefaultEyes::setBackgroundColor(lv_color_t color)
         _eyelid->setBgColor(color);
     }
 }
+
+void DefaultEyes::setExpressionColor(lv_color_t color)
+{
+    if (_eye) {
+        _eye->setBgColor(color);
+    }
+}

@@ -301,6 +301,34 @@ void Hal::xiaozhi_mcp_init()
                                             static_cast<uint32_t>(b);
                            stackchan.avatar().setBackgroundColor(lv_color_hex(color));
 
+                            return true;
+                        });
+
+    mclog::tagInfo(_tag, "add screen.set_expression_color tool");
+    mcp_server.AddTool("self.screen.set_expression_color",
+                       "Set the avatar expression foreground color using RGB values. This changes the robot face eyes "
+                       "and mouth color, not the background, wallpaper, room lights, or onboard LED.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+
+                           mclog::tagInfo(_tag, "set_expression_color: r={}, g={}, b={}", r, g, b);
+
+                           LvglLockGuard lock;
+
+                           auto& stackchan = GetStackChan();
+                           if (!stackchan.hasAvatar()) {
+                               return false;
+                           }
+
+                           uint32_t color = (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) |
+                                            static_cast<uint32_t>(b);
+                           stackchan.avatar().setExpressionColor(lv_color_hex(color));
+
                            return true;
                        });
 

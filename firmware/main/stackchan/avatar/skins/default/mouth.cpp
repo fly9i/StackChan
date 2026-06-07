@@ -71,3 +71,10 @@ void DefaultMouth::setVisible(bool visible)
 
     _mouth->setHidden(!visible);
 }
+
+void DefaultMouth::setExpressionColor(lv_color_t color)
+{
+    if (_mouth) {
+        _mouth->setBgColor(color);
+    }
+}

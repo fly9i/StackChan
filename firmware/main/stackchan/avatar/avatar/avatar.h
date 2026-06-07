@@ -68,6 +68,11 @@ public:
         (void)color;
     }
 
+    virtual void setExpressionColor(lv_color_t color)
+    {
+        (void)color;
+    }
+
     virtual void setBackgroundImage(std::unique_ptr<LvglImage> image)
     {
         (void)image;
