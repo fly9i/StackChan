@@ -137,8 +137,8 @@ void Hal::updateHeapStatusLog()
 #include <settings.h>
 
 namespace {
-constexpr const char* kZfAgentOtaUrl       = "http://192.168.1.215:8003/xiaozhi/ota/";
-constexpr const char* kZfAgentWebsocketUrl = "ws://192.168.1.215:8000/xiaozhi/v1/";
+constexpr const char* kZfAgentOtaUrl       = "http://192.168.1.233:8003/xiaozhi/ota/";
+constexpr const char* kZfAgentWebsocketUrl = "ws://192.168.1.233:8000/xiaozhi/v1/";
 }  // namespace
 
 void Hal::xiaozhi_board_init()
