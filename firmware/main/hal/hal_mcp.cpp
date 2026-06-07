@@ -6,13 +6,22 @@
 #include "hal.h"
 #include <board.h>
 #include <display/lvgl_display/lvgl_image.h>
+#include <driver/gpio.h>
+#include <driver/rmt_encoder.h>
+#include <driver/rmt_tx.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <jpg/jpeg_to_image.h>
 #include <mooncake_log.h>
 #include <mcp_server.h>
 #include <stackchan/stackchan.h>
 #include <stackchan/modifiers/dance.h>
 #include <apps/common/common.h>
+#include <algorithm>
+#include <array>
+#include <cstring>
 
 using namespace stackchan;
 
@@ -34,6 +43,374 @@ static const char* _background_image_urls[] = {
 };
 
 static size_t _next_background_image_index = 0;
+
+class LedStripController {
+public:
+    enum class Mode {
+        Off,
+        Solid,
+        Blink,
+        Rainbow,
+        Chase,
+    };
+
+    bool setColor(int red, int green, int blue, int brightness)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Solid, red, green, blue, brightness, 0, 0);
+        return true;
+    }
+
+    bool blink(int red, int green, int blue, int brightness, int interval_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Blink, red, green, blue, brightness, interval_ms, 0);
+        return true;
+    }
+
+    bool rainbow(int brightness, int speed_ms)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Rainbow, 0, 0, 0, brightness, speed_ms, 0);
+        return true;
+    }
+
+    bool chase(int red, int green, int blue, int brightness, int speed_ms, int width)
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Chase, red, green, blue, brightness, speed_ms, width);
+        return true;
+    }
+
+    bool clear()
+    {
+        if (!ensure_started()) {
+            return false;
+        }
+
+        update_state(Mode::Off, 0, 0, 0, 0, 0, 0);
+        return true;
+    }
+
+    const char* lastError() const
+    {
+        return _last_error;
+    }
+
+private:
+    struct State {
+        Mode mode = Mode::Off;
+        uint8_t red = 0;
+        uint8_t green = 0;
+        uint8_t blue = 0;
+        uint8_t brightness = 32;
+        uint32_t interval_ms = 50;
+        size_t chase_width = 10;
+        bool dirty = true;
+    };
+
+    static constexpr gpio_num_t kDataPin = GPIO_NUM_9;
+    static constexpr uint32_t kRmtResolutionHz = 10000000;
+    static constexpr size_t kLedCount = 160;
+    static constexpr size_t kRmtMemBlockSymbols = 64;
+
+    std::array<uint8_t, kLedCount * 3> _pixels = {};
+    rmt_channel_handle_t _tx_channel = nullptr;
+    rmt_encoder_handle_t _encoder = nullptr;
+    SemaphoreHandle_t _mutex = nullptr;
+    TaskHandle_t _task = nullptr;
+    State _state;
+    uint8_t _rainbow_phase = 0;
+    size_t _chase_head = 0;
+    bool _blink_on = false;
+    uint32_t _last_frame_ms = 0;
+    const char* _last_error = "not_started";
+
+    static rmt_symbol_word_t symbol(int level0, uint16_t duration0, int level1, uint16_t duration1)
+    {
+        rmt_symbol_word_t value = {};
+        value.level0 = level0;
+        value.duration0 = duration0;
+        value.level1 = level1;
+        value.duration1 = duration1;
+        return value;
+    }
+
+    static size_t encoder_callback(const void* data, size_t data_size, size_t symbols_written, size_t symbols_free,
+                                   rmt_symbol_word_t* symbols, bool* done, void*)
+    {
+        const size_t data_pos = symbols_written / 8;
+        if (data_pos < data_size) {
+            if (symbols_free < 8) {
+                return 0;
+            }
+
+            const auto* data_bytes = static_cast<const uint8_t*>(data);
+            size_t symbol_pos = 0;
+            for (uint8_t bit_mask = 0x80; bit_mask != 0; bit_mask >>= 1) {
+                symbols[symbol_pos++] = (data_bytes[data_pos] & bit_mask) ? symbol(1, 9, 0, 3) : symbol(1, 3, 0, 9);
+            }
+            return symbol_pos;
+        }
+
+        if (symbols_free < 1) {
+            return 0;
+        }
+
+        symbols[0] = symbol(0, 1250, 0, 1250);
+        *done = true;
+        return 1;
+    }
+
+    static void task_entry(void* arg)
+    {
+        static_cast<LedStripController*>(arg)->task_loop();
+    }
+
+    bool ensure_started()
+    {
+        if (_tx_channel != nullptr && _encoder != nullptr && _task != nullptr) {
+            return true;
+        }
+
+        if (_mutex == nullptr) {
+            _mutex = xSemaphoreCreateMutex();
+            if (_mutex == nullptr) {
+                _last_error = "mutex_failed";
+                return false;
+            }
+        }
+
+        if (_tx_channel == nullptr) {
+            rmt_tx_channel_config_t tx_config = {};
+            tx_config.clk_src = RMT_CLK_SRC_DEFAULT;
+            tx_config.gpio_num = kDataPin;
+            tx_config.mem_block_symbols = kRmtMemBlockSymbols;
+            tx_config.resolution_hz = kRmtResolutionHz;
+            tx_config.trans_queue_depth = 4;
+
+            esp_err_t err = rmt_new_tx_channel(&tx_config, &_tx_channel);
+            if (err != ESP_OK) {
+                mclog::tagError(_tag, "led strip rmt_new_tx_channel failed: {}", esp_err_to_name(err));
+                _last_error = "rmt_channel_failed";
+                return false;
+            }
+        }
+
+        if (_encoder == nullptr) {
+            rmt_simple_encoder_config_t encoder_config = {};
+            encoder_config.callback = encoder_callback;
+
+            esp_err_t err = rmt_new_simple_encoder(&encoder_config, &_encoder);
+            if (err != ESP_OK) {
+                mclog::tagError(_tag, "led strip rmt_new_simple_encoder failed: {}", esp_err_to_name(err));
+                _last_error = "rmt_encoder_failed";
+                return false;
+            }
+        }
+
+        esp_err_t err = rmt_enable(_tx_channel);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            mclog::tagError(_tag, "led strip rmt_enable failed: {}", esp_err_to_name(err));
+            _last_error = "rmt_enable_failed";
+            return false;
+        }
+
+        if (_task == nullptr) {
+            BaseType_t ret = xTaskCreate(task_entry, "led_strip_mcp", 4096, this, 3, &_task);
+            if (ret != pdPASS) {
+                _last_error = "task_failed";
+                return false;
+            }
+        }
+
+        _last_error = "ok";
+        return true;
+    }
+
+    void update_state(Mode mode, int red, int green, int blue, int brightness, int interval_ms, int chase_width)
+    {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        _state.mode = mode;
+        _state.red = static_cast<uint8_t>(std::clamp(red, 0, 255));
+        _state.green = static_cast<uint8_t>(std::clamp(green, 0, 255));
+        _state.blue = static_cast<uint8_t>(std::clamp(blue, 0, 255));
+        _state.brightness = static_cast<uint8_t>(std::clamp(brightness, 0, 255));
+        _state.interval_ms = static_cast<uint32_t>(std::clamp(interval_ms, 20, 5000));
+        _state.chase_width = static_cast<size_t>(std::clamp(chase_width, 1, 40));
+        _state.dirty = true;
+        xSemaphoreGive(_mutex);
+    }
+
+    void task_loop()
+    {
+        while (true) {
+            render_if_needed();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    void render_if_needed()
+    {
+        State state;
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        state = _state;
+        if (!_state.dirty && (state.mode == Mode::Solid || state.mode == Mode::Off)) {
+            xSemaphoreGive(_mutex);
+            return;
+        }
+        _state.dirty = false;
+        xSemaphoreGive(_mutex);
+
+        uint32_t now = GetHAL().millis();
+        if (!state.dirty && state.mode != Mode::Solid && now - _last_frame_ms < state.interval_ms) {
+            return;
+        }
+        _last_frame_ms = now;
+
+        switch (state.mode) {
+            case Mode::Off:
+                clear_pixels();
+                break;
+            case Mode::Solid:
+                fill_solid(state.red, state.green, state.blue, state.brightness);
+                break;
+            case Mode::Blink:
+                _blink_on = !_blink_on;
+                if (_blink_on) {
+                    fill_solid(state.red, state.green, state.blue, state.brightness);
+                } else {
+                    clear_pixels();
+                }
+                break;
+            case Mode::Rainbow:
+                fill_rainbow(_rainbow_phase, state.brightness);
+                _rainbow_phase = static_cast<uint8_t>(_rainbow_phase + 5);
+                break;
+            case Mode::Chase:
+                fill_chase(state);
+                _chase_head = (_chase_head + 1) % kLedCount;
+                break;
+        }
+
+        flush_pixels();
+    }
+
+    void clear_pixels()
+    {
+        _pixels.fill(0);
+    }
+
+    void set_pixel_rgb(size_t index, uint8_t red, uint8_t green, uint8_t blue)
+    {
+        if (index >= kLedCount) {
+            return;
+        }
+        _pixels[index * 3 + 0] = green;
+        _pixels[index * 3 + 1] = red;
+        _pixels[index * 3 + 2] = blue;
+    }
+
+    void fill_solid(uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness)
+    {
+        red = static_cast<uint8_t>(static_cast<uint16_t>(red) * brightness / 255);
+        green = static_cast<uint8_t>(static_cast<uint16_t>(green) * brightness / 255);
+        blue = static_cast<uint8_t>(static_cast<uint16_t>(blue) * brightness / 255);
+        for (size_t i = 0; i < kLedCount; ++i) {
+            set_pixel_rgb(i, red, green, blue);
+        }
+    }
+
+    void fill_rainbow(uint8_t phase, uint8_t brightness)
+    {
+        for (size_t i = 0; i < kLedCount; ++i) {
+            uint8_t red = 0;
+            uint8_t green = 0;
+            uint8_t blue = 0;
+            color_wheel(static_cast<uint8_t>(phase + i * 256 / kLedCount), brightness, red, green, blue);
+            set_pixel_rgb(i, red, green, blue);
+        }
+    }
+
+    void fill_chase(const State& state)
+    {
+        clear_pixels();
+        uint8_t red = static_cast<uint8_t>(static_cast<uint16_t>(state.red) * state.brightness / 255);
+        uint8_t green = static_cast<uint8_t>(static_cast<uint16_t>(state.green) * state.brightness / 255);
+        uint8_t blue = static_cast<uint8_t>(static_cast<uint16_t>(state.blue) * state.brightness / 255);
+        for (size_t dot = 0; dot < state.chase_width; ++dot) {
+            set_pixel_rgb((_chase_head + dot) % kLedCount, red, green, blue);
+        }
+    }
+
+    static void color_wheel(uint8_t wheel_pos, uint8_t brightness, uint8_t& red, uint8_t& green, uint8_t& blue)
+    {
+        uint8_t r = 0;
+        uint8_t g = 0;
+        uint8_t b = 0;
+
+        if (wheel_pos < 85) {
+            r = static_cast<uint8_t>(255 - wheel_pos * 3);
+            g = static_cast<uint8_t>(wheel_pos * 3);
+        } else if (wheel_pos < 170) {
+            wheel_pos = static_cast<uint8_t>(wheel_pos - 85);
+            g = static_cast<uint8_t>(255 - wheel_pos * 3);
+            b = static_cast<uint8_t>(wheel_pos * 3);
+        } else {
+            wheel_pos = static_cast<uint8_t>(wheel_pos - 170);
+            b = static_cast<uint8_t>(255 - wheel_pos * 3);
+            r = static_cast<uint8_t>(wheel_pos * 3);
+        }
+
+        red = static_cast<uint8_t>(static_cast<uint16_t>(r) * brightness / 255);
+        green = static_cast<uint8_t>(static_cast<uint16_t>(g) * brightness / 255);
+        blue = static_cast<uint8_t>(static_cast<uint16_t>(b) * brightness / 255);
+    }
+
+    void flush_pixels()
+    {
+        if (_tx_channel == nullptr || _encoder == nullptr) {
+            return;
+        }
+
+        rmt_transmit_config_t tx_config = {};
+        tx_config.loop_count = 0;
+        esp_err_t err = rmt_transmit(_tx_channel, _encoder, _pixels.data(), _pixels.size(), &tx_config);
+        if (err != ESP_OK) {
+            mclog::tagError(_tag, "led strip rmt_transmit failed: {}", esp_err_to_name(err));
+            _last_error = "transmit_failed";
+            return;
+        }
+
+        err = rmt_tx_wait_all_done(_tx_channel, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            mclog::tagError(_tag, "led strip rmt_tx_wait_all_done failed: {}", esp_err_to_name(err));
+            _last_error = "transmit_timeout";
+        }
+    }
+};
+
+static LedStripController _led_strip_controller;
+
+static ReturnValue _led_strip_result(bool success, const char* mode)
+{
+    if (success) {
+        return fmt::format(R"({{"success":true,"mode":"{}","gpio":9}})", mode);
+    }
+    return fmt::format(R"({{"success":false,"error":"{}","gpio":9}})", _led_strip_controller.lastError());
+}
 
 static ReturnValue _switch_next_background_image(StackChan& stackchan)
 {
@@ -330,6 +707,91 @@ void Hal::xiaozhi_mcp_init()
                            stackchan.avatar().setExpressionColor(lv_color_hex(color));
 
                            return true;
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.set_color tool");
+    mcp_server.AddTool("self.led_strip.set_color",
+                       "Set the external WS2812/S3 Chain LED strip connected to GPIO9 to a solid RGB color. This is "
+                       "for the external light strip, not the robot face background or onboard LEDs.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 32, 0, 255)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip set_color: r={}, g={}, b={}, brightness={}", r, g, b,
+                                          brightness);
+                           return _led_strip_result(_led_strip_controller.setColor(r, g, b, brightness), "solid");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.blink tool");
+    mcp_server.AddTool("self.led_strip.blink",
+                       "Blink the external WS2812/S3 Chain LED strip connected to GPIO9 using an RGB color.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 32, 0, 255),
+                                     Property("interval_ms", kPropertyTypeInteger, 400, 50, 5000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+                           int interval_ms = properties["interval_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip blink: r={}, g={}, b={}, brightness={}, interval={}ms", r,
+                                          g, b, brightness, interval_ms);
+                           return _led_strip_result(_led_strip_controller.blink(r, g, b, brightness, interval_ms),
+                                                    "blink");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.rainbow tool");
+    mcp_server.AddTool("self.led_strip.rainbow",
+                       "Show a moving rainbow animation on the external WS2812/S3 Chain LED strip connected to GPIO9.",
+                       PropertyList({Property("brightness", kPropertyTypeInteger, 30, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 35, 20, 1000)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+
+                           mclog::tagInfo(_tag, "led_strip rainbow: brightness={}, speed={}ms", brightness, speed_ms);
+                           return _led_strip_result(_led_strip_controller.rainbow(brightness, speed_ms), "rainbow");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.chase tool");
+    mcp_server.AddTool("self.led_strip.chase",
+                       "Run a marquee/chase animation on the external WS2812/S3 Chain LED strip connected to GPIO9.",
+                       PropertyList({Property("red", kPropertyTypeInteger, 0, 0, 255),
+                                     Property("green", kPropertyTypeInteger, 220, 0, 255),
+                                     Property("blue", kPropertyTypeInteger, 255, 0, 255),
+                                     Property("brightness", kPropertyTypeInteger, 36, 0, 255),
+                                     Property("speed_ms", kPropertyTypeInteger, 25, 20, 1000),
+                                     Property("width", kPropertyTypeInteger, 10, 1, 40)}),
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           int r = properties["red"].value<int>();
+                           int g = properties["green"].value<int>();
+                           int b = properties["blue"].value<int>();
+                           int brightness = properties["brightness"].value<int>();
+                           int speed_ms = properties["speed_ms"].value<int>();
+                           int width = properties["width"].value<int>();
+
+                           mclog::tagInfo(_tag,
+                                          "led_strip chase: r={}, g={}, b={}, brightness={}, speed={}ms, width={}", r,
+                                          g, b, brightness, speed_ms, width);
+                           return _led_strip_result(_led_strip_controller.chase(r, g, b, brightness, speed_ms, width),
+                                                    "chase");
+                       });
+
+    mclog::tagInfo(_tag, "add led_strip.clear tool");
+    mcp_server.AddTool("self.led_strip.clear",
+                       "Turn off the external WS2812/S3 Chain LED strip connected to GPIO9.", std::vector<Property>{},
+                       [this](const PropertyList& properties) -> ReturnValue {
+                           mclog::tagInfo(_tag, "led_strip clear");
+                           return _led_strip_result(_led_strip_controller.clear(), "off");
                        });
 
     mclog::tagInfo(_tag, "add screen.next_background_image tool");
