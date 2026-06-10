@@ -165,6 +165,10 @@ void Hal::prepareXiaozhiLaunchConfig()
     mclog::tagInfo(_tag, "prepare official xiaozhi config");
     Settings wifi_settings("wifi", true);
     wifi_settings.EraseKey("ota_url");
+
+    Settings websocket_settings("websocket", true);
+    websocket_settings.EraseKey("url");
+    websocket_settings.EraseKey("token");
 }
 
 static void _stackchan_update_task(void* param)
