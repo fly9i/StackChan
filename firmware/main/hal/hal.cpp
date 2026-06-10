@@ -137,7 +137,6 @@ void Hal::updateHeapStatusLog()
 #include <settings.h>
 
 namespace {
-constexpr const char* kZfAgentOtaUrl       = "http://192.168.1.136:8130/xiaozhi/ota/";
 constexpr const char* kZfAgentWebsocketUrl = "ws://192.168.1.136:8130/xiaozhi/v1/";
 }  // namespace
 
@@ -151,10 +150,10 @@ void Hal::xiaozhi_board_init()
 void Hal::prepareXiaozhiLaunchConfig()
 {
     if (_xiaozhi_launch_profile == XiaozhiLaunchProfile::ZfAgent) {
-        mclog::tagInfo(_tag, "prepare ZF Agent xiaozhi config: ota={}, websocket={}", kZfAgentOtaUrl,
-                       kZfAgentWebsocketUrl);
+        mclog::tagInfo(_tag, "prepare ZF Agent xiaozhi config: websocket={}", kZfAgentWebsocketUrl);
+
         Settings wifi_settings("wifi", true);
-        wifi_settings.SetString("ota_url", kZfAgentOtaUrl);
+        wifi_settings.EraseKey("ota_url");
 
         Settings websocket_settings("websocket", true);
         websocket_settings.SetString("url", kZfAgentWebsocketUrl);
