@@ -1,8 +1,81 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..3b6f07e 100644
+index d69d43d..10ef544 100644
 --- a/main/application.cc
 +++ b/main/application.cc
-@@ -610,33 +610,36 @@ void Application::InitializeProtocol() {
+@@ -327,8 +327,17 @@ void Application::ActivationTask() {
+     // Check for new assets version
+     CheckAssetsVersion();
+ 
+-    // Check for new firmware version
+-    CheckNewVersion();
++    // If NVS already has a pre-configured websocket URL, skip OTA entirely
++    {
++        Settings ws_settings("websocket", false);
++        std::string ws_url = ws_settings.GetString("url");
++        if (!ws_url.empty()) {
++            ESP_LOGI(TAG, "Pre-configured websocket URL found: %s, skipping OTA", ws_url.c_str());
++            ota_->MarkPreconfiguredWebsocket();
++        } else {
++            CheckNewVersion();
++        }
++    }
+ 
+     // Initialize the protocol
+     InitializeProtocol();
+@@ -358,35 +367,10 @@ void Application::CheckAssetsVersion() {
+     std::string download_url = settings.GetString("download_url");
+ 
+     if (!download_url.empty()) {
++        // 自定义固件：检测到新素材也不下载，避免官方 OTA 覆盖自定义素材；清掉 key 防止反复触发
+         settings.EraseKey("download_url");
+-
+-        char message[256];
+-        snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
+-        Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
+-        
+-        // Wait for the audio service to be idle for 3 seconds
+-        vTaskDelay(pdMS_TO_TICKS(3000));
+-        SetDeviceState(kDeviceStateUpgrading);
+-        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+-        display->SetChatMessage("system", Lang::Strings::PLEASE_WAIT);
+-
+-        bool success = assets.Download(download_url, [this, display](int progress, size_t speed) -> void {
+-            char buffer[32];
+-            snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
+-            Schedule([display, message = std::string(buffer)]() {
+-                display->SetChatMessage("system", message.c_str());
+-            });
+-        });
+-
+-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+-        vTaskDelay(pdMS_TO_TICKS(1000));
+-
+-        if (!success) {
+-            Alert(Lang::Strings::ERROR, Lang::Strings::DOWNLOAD_ASSETS_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+-            vTaskDelay(pdMS_TO_TICKS(2000));
+-            SetDeviceState(kDeviceStateActivating);
+-            return;
+-        }
++        ESP_LOGW(TAG, "New assets available (%s), but auto-download is disabled; keeping current assets",
++                 download_url.c_str());
+     }
+ 
+     // Apply assets
+@@ -433,10 +417,9 @@ void Application::CheckNewVersion() {
+         retry_delay = 10; // Reset retry delay
+ 
+         if (ota_->HasNewVersion()) {
+-            if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
+-                return; // This line will never be reached after reboot
+-            }
+-            // If upgrade failed, continue to normal operation
++            // 自定义固件：检测到新版本也不自动升级，避免官方 OTA 覆盖自定义固件
++            ESP_LOGW(TAG, "New firmware version %s available, but auto-upgrade is disabled; keeping current firmware",
++                     ota_->GetFirmwareVersion().c_str());
+         }
+ 
+         // No new version, mark the current version as valid
+@@ -610,33 +593,36 @@ void Application::InitializeProtocol() {
  }
  
  void Application::ShowActivationCode(const std::string& code, const std::string& message) {
@@ -271,3 +344,15 @@ index 7bc917b..874b137 100644
  };
  
  #endif // I2C_DEVICE_H
+diff --git a/main/ota.h b/main/ota.h
+index 1e5d687..5027ac3 100644
+--- a/main/ota.h
++++ b/main/ota.h
+@@ -20,6 +20,7 @@ public:
+     bool HasWebsocketConfig() { return has_websocket_config_; }
+     bool HasActivationCode() { return has_activation_code_; }
+     bool HasServerTime() { return has_server_time_; }
++    void MarkPreconfiguredWebsocket() { has_websocket_config_ = true; has_mqtt_config_ = false; }
+     bool StartUpgrade(std::function<void(int progress, size_t speed)> callback);
+     static bool Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback);
+     void MarkCurrentVersionValid();
